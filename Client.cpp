@@ -9,7 +9,7 @@
 #include "RegistrationRequest_client.hpp"
 
 int main() {
-	Client::RegistrationRequest::registerPrefixes();
+	Client::RegistrationRequest::registerPrefixesAndReceiveResponse();
 }
 
 

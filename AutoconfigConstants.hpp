@@ -23,6 +23,8 @@ static const char* RV_IPAddress = "192.168.0.103";
 
 static const uint16_t portNumber = 53000;
 
+static const int maxDatagramSize = 65507; // check this
+
 }
 
 #endif /* AUTOCONFIGCONSTANTS_HPP_ */

@@ -12,7 +12,7 @@ namespace Client {
 
 class RegistrationRequest {
 public:
-	static void registerPrefixes();
+	static void registerPrefixesAndReceiveResponse();
 };
 
 }
