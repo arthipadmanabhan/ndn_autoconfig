@@ -13,9 +13,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "RegistrationRequest_client.hpp"
 #include <ndn-cxx/encoding/block.hpp>
+#include <ndn-cxx/encoding/tlv.hpp>
+#include <ndn-cxx/encoding/tlv-nfd.hpp>
+#include <ndn-cxx/face.hpp>
+#include <ndn-cxx/mgmt/nfd/control-command.hpp>
+#include <ndn-cxx/mgmt/control-response.hpp>
+#include <ndn-cxx/mgmt/nfd/controller.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
 #include "AutoconfigConstants.hpp"
+#include "RegistrationRequest_client.hpp"
 
 // Create a prefix block out of the input string and include it in the value of the registration request block
 ndn::Block addPrefixBlock(std::string inputString, ndn::Block prefixListBlock) {
@@ -55,22 +62,84 @@ ndn::Block getPrefixesToRegister() {
 	return prefixListBlock;
 }
 
-// Just prints IP addresses and prefixes they each serve
-// TODO: figure out how to store these directly in FIB
-void parseMappingListBlock(ndn::Block receivedBlock) {
-	receivedBlock.parse();
-	for (auto mappingIterator = receivedBlock.elements_begin(); mappingIterator < receivedBlock.elements_end(); mappingIterator++) {
-		mappingIterator->parse();
-		ndn::Block IPBlock = mappingIterator->get(AutoconfigConstants::IPAddress);
-		printf("For IP address: %s, registered prefixes are: \n", IPBlock.value());
-		ndn::Block prefixListBlock = mappingIterator->get(AutoconfigConstants::PrefixListToRegister);
-		prefixListBlock.parse();
-		for (auto iterator = prefixListBlock.elements_begin(); iterator < prefixListBlock.elements_end(); iterator++) {
-			printf("%s \n", iterator->value());
+// TODO: This needs to support IPv6 addresses as well
+const char* uriFromIPAddress(const char *IPAddress) {
+	const char *scheme = "udp4://";
+	const char *port = ":6363";
+	int length = strlen(IPAddress) + strlen(scheme) + strlen(port);
+	char uriArray[length];
+	strcpy(uriArray, scheme);
+	strcat(uriArray, IPAddress);
+	strcat(uriArray, port);
+	const char *Uri = uriArray;
+	return Uri;
+}
+
+void OnFibAddNextHopSuccess (const ndn::nfd::ControlParameters parameters) {
+	printf("Adding next hop in fib succeeded \n");
+}
+
+void OnFibAddNextHopFailure (const ndn::mgmt::ControlResponse response) {
+	printf("Adding next hop in fib failed \n");
+}
+
+// Get faceId from response and add fib entries for each prefix this IP serves
+void OnFaceCreateSuccess (const ndn::nfd::ControlParameters parameters, ndn::Block prefixList) {
+	if (parameters.hasFaceId()) {
+		unsigned long long faceId = parameters.getFaceId();
+		printf("New face created. Id: %llu \n", faceId);
+
+		prefixList.parse();
+		for (auto prefixIterator = prefixList.elements_begin(); prefixIterator < prefixList.elements_end(); prefixIterator++) {
+			// Control parameters include name and FaceId
+			ndn::nfd::ControlParameters parameters;
+			parameters.setFaceId(faceId);
+			ndn::Name prefixName = ndn::Name(reinterpret_cast<const char*>(prefixIterator->value()));
+			parameters.setName(prefixName);
+
+			ndn::Face faceToNFD;
+			ndn::KeyChain appKeyChain;
+			ndn::nfd::Controller controller(faceToNFD, appKeyChain);
+			controller.start<ndn::nfd::FibAddNextHopCommand>(parameters, &OnFibAddNextHopSuccess, &OnFibAddNextHopFailure);
+			faceToNFD.processEvents();
 		}
+	}
+	else {
+		// Assert
 	}
 }
 
+void OnFaceCreateFailure (const ndn::mgmt::ControlResponse response) {
+	unsigned int statusCode = response.getCode();
+	printf("Creating face failed with code %u \n", statusCode);
+}
+
+// For each mapping (containing one IP address and a list of prefixes it serves), add a face for the IP,
+// which if successful, triggers adding fib entries
+void storeMapping(ndn::Block mappingListBlock) {
+	mappingListBlock.parse();
+	for (auto mappingIterator = mappingListBlock.elements_begin(); mappingIterator < mappingListBlock.elements_end(); mappingIterator++) {
+		mappingIterator->parse();
+
+		// Get the IP address and prefix list for this node
+		ndn::Block IPBlock = mappingIterator->get(AutoconfigConstants::IPAddress);
+		const char *IPAddress = reinterpret_cast<const char*>(IPBlock.value());
+		ndn::Block prefixList = mappingIterator->get(AutoconfigConstants::PrefixListToRegister);
+
+		// Create a face for this IP address
+		ndn::Face faceToNFD;
+		ndn::KeyChain appKeyChain;
+		ndn::nfd::Controller controller(faceToNFD, appKeyChain);
+
+		ndn::nfd::ControlParameters parameters;
+		parameters.setUri(uriFromIPAddress(IPAddress));
+
+		controller.start<ndn::nfd::FaceCreateCommand>(parameters, std::bind(&OnFaceCreateSuccess, _1, prefixList), &OnFaceCreateFailure);
+		faceToNFD.processEvents();
+	}
+}
+
+// Sends prefixes, receives response, and sends response to be stored in local NFD
 void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 	// Ask user for prefixes
 	ndn::Block prefixListToRegister = getPrefixesToRegister();
@@ -106,7 +175,7 @@ void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 			AutoconfigConstants::BlockType blockType = static_cast<AutoconfigConstants::BlockType>(receivedBlock.type());
 			switch(blockType) {
 				case AutoconfigConstants::IPPrefixMappingList:
-					parseMappingListBlock(receivedBlock);
+					storeMapping(receivedBlock);
 					break;
 				default:
 					break;
@@ -117,5 +186,4 @@ void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 		}
 	}
 }
-
 
