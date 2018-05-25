@@ -18,12 +18,18 @@ enum BlockType {
 	IPPrefixMappingList = 132
 };
 
+// RV constants
 // TODO: Save only RV name and get IP with DNS
 static const char* RV_IPAddress = "192.168.0.103";
-
 static const uint16_t portNumber = 53000;
 
+// max UDP datagram
 static const int maxDatagramSize = 65507; // check this
+
+// Prefix registration retransmit constants
+static const int timeoutSeconds = 2;
+static const int timeoutMilliseconds = 0;
+static const int maxRetries = 3;
 
 }
 

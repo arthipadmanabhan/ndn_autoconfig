@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -139,28 +140,18 @@ void storeMapping(ndn::Block mappingListBlock) {
 	}
 }
 
-// Sends prefixes, receives response, and sends response to be stored in local NFD
-void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
-	// Ask user for prefixes
-	ndn::Block prefixListToRegister = getPrefixesToRegister();
-
-	// Send to server
-	int socketFileDescriptor = socket(AF_INET,SOCK_DGRAM,0);
-	struct sockaddr_in server;
-	server.sin_family = AF_INET;
-	server.sin_port = htons(AutoconfigConstants::portNumber);
-	server.sin_addr.s_addr = inet_addr(AutoconfigConstants::RV_IPAddress);
-
-	// TODO: Add retransmit timer logic to send/receive
+void sendPrefixListToServer(int socketFileDescriptor, ndn::Block prefixListToRegister, sockaddr_in server) {
 	if (sendto(socketFileDescriptor, prefixListToRegister.wire(), prefixListToRegister.size(), 0, (struct sockaddr *)&server, sizeof(server)) < 0) {
 		printf("Error sending to RV \n");
 	} else {
 		printf("Sent prefix list to RV \n");
 	}
+}
 
-	// Receive response from server
+void receiveAndStoreServerResponse(int socketFileDescriptor, sockaddr_in server) {
 	unsigned char* receivingBuffer = new unsigned char[AutoconfigConstants::maxDatagramSize];
 	socklen_t serverLength = sizeof(server);
+
 	int numberBytesReceived = recvfrom(socketFileDescriptor, receivingBuffer, AutoconfigConstants::maxDatagramSize, 0, (struct sockaddr *)&server, &serverLength);
 	// recvfrom returns -1 on failure, number of bytes read otherwise
 	if (numberBytesReceived < 0) {
@@ -184,6 +175,48 @@ void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 		else {
 			printf("Unable to parse received bytes \n");
 		}
+	}
+}
+
+// Sends prefixes, receives response, and sends response to be stored in local NFD
+void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
+	// Ask user for prefixes
+	ndn::Block prefixListToRegister = getPrefixesToRegister();
+
+	// Set up socket to communicate with server
+	int socketFileDescriptor = socket(AF_INET,SOCK_DGRAM,0);
+	struct sockaddr_in server;
+	server.sin_family = AF_INET;
+	server.sin_port = htons(AutoconfigConstants::portNumber);
+	server.sin_addr.s_addr = inet_addr(AutoconfigConstants::RV_IPAddress);
+
+	// Set up for retransmit timer for prefix registration
+	timeval tv;
+	tv.tv_sec = AutoconfigConstants::timeoutSeconds;
+	tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
+
+	fd_set fdRead;
+	FD_ZERO(&fdRead);
+	FD_SET(socketFileDescriptor, &fdRead);
+
+	// Send and retransmit if no response before timeout
+	sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
+	int numberOfRetries = 0;
+	while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRetries < AutoconfigConstants::maxRetries) {
+		printf("Retransmitting \n");
+		sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
+
+		numberOfRetries++;
+
+		// Reset timeval because the call to select above can change it
+		tv.tv_sec = AutoconfigConstants::timeoutSeconds;
+		tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
+	}
+	if (numberOfRetries < AutoconfigConstants::maxRetries) {
+		// Now we know there is a response, so receive it
+		receiveAndStoreServerResponse(socketFileDescriptor, server);
+	} else {
+		printf("Retransmitted max number of times and received no response \n");
 	}
 }
 
