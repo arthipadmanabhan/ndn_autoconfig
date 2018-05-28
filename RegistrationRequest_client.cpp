@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <thread>
+#include <chrono>
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/encoding/tlv.hpp>
 #include <ndn-cxx/encoding/tlv-nfd.hpp>
@@ -112,7 +114,24 @@ void OnFaceCreateSuccess (const ndn::nfd::ControlParameters parameters, ndn::Blo
 
 void OnFaceCreateFailure (const ndn::mgmt::ControlResponse response) {
 	unsigned int statusCode = response.getCode();
-	printf("Creating face failed with code %u \n", statusCode);
+	if (statusCode == 409) {
+		printf("Face already exists for this Uri: ");
+		ndn::nfd::ControlParameters parameters;
+		try {
+		    parameters.wireDecode(response.getBody());
+		    if (parameters.hasFaceId()) {
+				unsigned long long faceId = parameters.getFaceId();
+				printf("Id = %llu \n", faceId);
+		    } else {
+		    	// assert
+		    }
+		}
+		catch (const ndn::tlv::Error& e) {
+			printf("Error processing response \n");
+		}
+	} else {
+		printf("Creating face failed with code %u \n", statusCode);
+	}
 }
 
 // For each mapping (containing one IP address and a list of prefixes it serves), add a face for the IP,
@@ -137,6 +156,16 @@ void storeMapping(ndn::Block mappingListBlock) {
 
 		controller.start<ndn::nfd::FaceCreateCommand>(parameters, std::bind(&OnFaceCreateSuccess, _1, prefixList), &OnFaceCreateFailure);
 		faceToNFD.processEvents();
+	}
+}
+
+void sendUpdateRequestToServer(int socketFileDescriptor, sockaddr_in server) {
+	ndn::Block updateRequestBlock = ndn::Block(AutoconfigConstants::BlockType::UpdateRequest);
+	updateRequestBlock.encode();
+	if (sendto(socketFileDescriptor, updateRequestBlock.wire(), updateRequestBlock.size(), 0, (struct sockaddr *)&server, sizeof(server)) < 0) {
+		printf("Error sending update request to RV \n");
+	} else {
+		printf("Sent update request to RV \n");
 	}
 }
 
@@ -201,22 +230,42 @@ void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 
 	// Send and retransmit if no response before timeout
 	sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
-	int numberOfRetries = 0;
-	while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRetries < AutoconfigConstants::maxRetries) {
-		printf("Retransmitting \n");
+	int numberOfPrefixRegistrationRetries = 0;
+	while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
+		printf("Received no response. Retransmitting prefix list \n");
 		sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
 
-		numberOfRetries++;
+		numberOfPrefixRegistrationRetries++;
 
 		// Reset timeval because the call to select above can change it
 		tv.tv_sec = AutoconfigConstants::timeoutSeconds;
 		tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
 	}
-	if (numberOfRetries < AutoconfigConstants::maxRetries) {
+	if (numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
 		// Now we know there is a response, so receive it
 		receiveAndStoreServerResponse(socketFileDescriptor, server);
 	} else {
 		printf("Retransmitted max number of times and received no response \n");
+	}
+
+	// Start refresh timer
+	int numberOfRequestUpdateRetries = 0;
+	while (true) {
+		std::this_thread::sleep_for(std::chrono::seconds(AutoconfigConstants::refreshPeriodSeconds));
+		sendUpdateRequestToServer(socketFileDescriptor, server);
+		while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
+			printf("Received no response. Retransmitting request update\n");
+			sendUpdateRequestToServer(socketFileDescriptor, server);
+			numberOfRequestUpdateRetries++;
+			tv.tv_sec = AutoconfigConstants::timeoutSeconds;
+			tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
+		}
+		if (numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
+			receiveAndStoreServerResponse(socketFileDescriptor, server);
+		} else {
+			printf("Retransmitted update request max number of times and received no response \n");
+		}
+		numberOfRequestUpdateRetries = 0;
 	}
 }
 

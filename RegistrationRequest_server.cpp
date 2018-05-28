@@ -34,18 +34,22 @@ void Server::RegistrationRequest::addPrefixListToMappingList(ndn::Block prefixLi
 		printf("%s \n", iterator->value());
 	}
 	printf("for IP address: %s \n", clientIPAddress);
-	printf("Number of entries in mapping list: %zu \n", m_prefixIPMappingList.elements_size());
+	printf("Number of prefix registration calls made to RV: %zu \n", m_prefixIPMappingList.elements_size());
 }
 
-void Server::RegistrationRequest::handleRegistrationRequest(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_in client, socklen_t clientLength) {
-	// Add the received block containing a list of prefixes and the IP it came from to the mapping
-	addPrefixListToMappingList(prefixListBlock, client);
-
-	// Encode and send the current IP-prefix mappings we know about to client
+// Encode and send the current IP-prefix mappings we know about to client
+void Server::RegistrationRequest::sendMappingListToClient(int socketFileDescriptor, sockaddr_in client, socklen_t clientLength) {
 	m_prefixIPMappingList.encode();
 	if (sendto(socketFileDescriptor, m_prefixIPMappingList.wire(), m_prefixIPMappingList.size(), 0, (struct sockaddr *)&client, clientLength) < 0) {
 		printf("Error sending response to client \n");
 	} else {
 		printf("Sent response to client \n");
 	}
+}
+
+// Add the received block containing a list of prefixes and the IP it came from to the mapping
+// and send back info about all clients we know about
+void Server::RegistrationRequest::registerClientInfoAndSendResponse(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_in client, socklen_t clientLength) {
+	addPrefixListToMappingList(prefixListBlock, client);
+	sendMappingListToClient(socketFileDescriptor, client, clientLength);
 }

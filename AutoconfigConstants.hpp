@@ -15,7 +15,8 @@ enum BlockType {
 	Prefix = 129,
 	IPAddress = 130,
 	IPPrefixMapping = 131,
-	IPPrefixMappingList = 132
+	IPPrefixMappingList = 132,
+	UpdateRequest = 133
 };
 
 // RV constants
@@ -26,10 +27,13 @@ static const uint16_t portNumber = 53000;
 // max UDP datagram
 static const int maxDatagramSize = 65507; // check this
 
-// Prefix registration retransmit constants
+// Registration/refresh retransmit constants
 static const int timeoutSeconds = 2;
 static const int timeoutMilliseconds = 0;
 static const int maxRetries = 3;
+
+// Refresh timer
+static const int refreshPeriodSeconds = 30;
 
 }
 

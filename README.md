@@ -1,10 +1,10 @@
 # ndn_autoconfig
 Allows NDN nodes to interconnect in networks with communication restrictions
 
-This set of client-server applications is designed to allow NDN nodes to discover each other when the local network either doesn’t allow multicast or allows neither multicast nor unicast. 
+This set of client-server applications is designed to allow NDN nodes to discover each other when the local network doesn't allow multicast. This is done with a rendezvous server (RV) that stores information about all nodes that have registered with it and distributes this information to all other nodes upon request.
 
-Current status: In the case where unicast is allowed but multicast is not, RV stores IP address - prefix list mappings and can distribute this list to any other nodes in the network so they can communicate directly going forward. We started by focusing on this case: the client can currently send prefixes under which it publishes to the server, and server will store the IP address – prefix list mapping and send back mappings for all nodes it knows about. When the client receives this mapping, it will store it in its local NFD (using control commands to add a face and then a fib entry). Currently, the assumption is that each node will register with the server exactly once. 
-
+Current status: The client can currently send prefixes under which it publishes to the server, and server will store the IP address – prefix list mapping and send back mappings for all nodes it knows about. When the client receives this mapping (it will retransmit up to 3 times if it doesn't), it will create a face for each IP address received and add each prefix to its fib with the corresponding IP as next hop. The client will also ask for an updated list from RV periodically. 
+ 
 The server being used for testing this project is icear, and its IP address is reachable if you are connected to the icear LAN. We are currently assuming that client and server are on the same LAN.
 
 To test:

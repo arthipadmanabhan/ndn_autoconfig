@@ -15,7 +15,8 @@ namespace Server {
 
 class RegistrationRequest {
 public:
-	static void handleRegistrationRequest(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_in client, socklen_t clientLength);
+	static void registerClientInfoAndSendResponse(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_in client, socklen_t clientLength);
+	static void sendMappingListToClient(int socketFileDescriptor, sockaddr_in client, socklen_t clientLength);
 
 private:
 	static void addPrefixListToMappingList(ndn::Block prefixListBlock, sockaddr_in client);

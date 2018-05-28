@@ -44,7 +44,10 @@ int main() {
 				AutoconfigConstants::BlockType blockType = static_cast<AutoconfigConstants::BlockType>(receivedBlock.type());
 				switch(blockType) {
 					case AutoconfigConstants::PrefixListToRegister:
-						Server::RegistrationRequest::handleRegistrationRequest(receivedBlock, socketFileDescriptor, client, clientLength);
+						Server::RegistrationRequest::registerClientInfoAndSendResponse(receivedBlock, socketFileDescriptor, client, clientLength);
+						break;
+					case AutoconfigConstants::UpdateRequest:
+						Server::RegistrationRequest::sendMappingListToClient(socketFileDescriptor, client, clientLength);
 						break;
 					default:
 						break;
