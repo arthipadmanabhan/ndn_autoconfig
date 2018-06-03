@@ -7,6 +7,8 @@
 
 #include <iostream>
 #include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -20,6 +22,7 @@
 #include <ndn-cxx/encoding/tlv.hpp>
 #include <ndn-cxx/encoding/tlv-nfd.hpp>
 #include <ndn-cxx/face.hpp>
+#include <ndn-cxx/net/face-uri.hpp>
 #include <ndn-cxx/mgmt/nfd/control-command.hpp>
 #include <ndn-cxx/mgmt/control-response.hpp>
 #include <ndn-cxx/mgmt/nfd/controller.hpp>
@@ -27,7 +30,9 @@
 #include "AutoconfigConstants.hpp"
 #include "RegistrationRequest_client.hpp"
 
-// Create a prefix block out of the input string and include it in the value of the registration request block
+/* Helpers to get prefixes from user and package them to send to RV */
+
+// Create a prefix block from a string and add it to the registration request
 ndn::Block addPrefixBlock(std::string inputString, ndn::Block prefixListBlock) {
 	ndn::Buffer inputStringBuffer = ndn::Buffer(inputString.c_str(), inputString.length() + 1);
 	ndn::ConstBufferPtr inputStringBufferPointer = std::make_shared<const ndn::Buffer>(inputStringBuffer);
@@ -65,18 +70,43 @@ ndn::Block getPrefixesToRegister() {
 	return prefixListBlock;
 }
 
-// TODO: This needs to support IPv6 addresses as well
+/* Helper to determine address type of IP and return uri */
 const char* uriFromIPAddress(const char *IPAddress) {
-	const char *scheme = "udp4://";
-	const char *port = ":6363";
-	int length = strlen(IPAddress) + strlen(scheme) + strlen(port);
-	char uriArray[length];
-	strcpy(uriArray, scheme);
-	strcat(uriArray, IPAddress);
-	strcat(uriArray, port);
-	const char *Uri = uriArray;
-	return Uri;
+	struct addrinfo hints, *info;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+
+	const char *addressString = IPAddress;
+	const char *uriString;
+	bool isIPv6 = false;
+	if (getaddrinfo(IPAddress, 0, &hints, &info) == 0) {
+		if (info->ai_family == AF_INET6) {
+			struct sockaddr_in6 *addr = (struct sockaddr_in6*)(info->ai_addr);
+			if (IN6_IS_ADDR_V4MAPPED(&addr->sin6_addr)) {
+				struct in_addr IPv4address = { *(const in_addr_t *)(addr->sin6_addr.s6_addr+12)};
+				addressString = inet_ntoa(IPv4address);
+			} else {
+				isIPv6 = true;
+			}
+		}
+
+		ndn::FaceUri uri;
+		if (isIPv6) {
+			boost::asio::ip::udp::endpoint endpoint6(boost::asio::ip::address_v6::from_string(addressString), AutoconfigConstants::NDNPort);
+			uri = ndn::FaceUri(endpoint6);
+		} else {
+			boost::asio::ip::udp::endpoint endpoint4(boost::asio::ip::address_v4::from_string(addressString), AutoconfigConstants::NDNPort);
+			uri = ndn::FaceUri(endpoint4);
+		}
+		uriString = uri.toString().c_str();
+
+		freeaddrinfo(info);
+	}
+
+	return uriString;
 }
+
+/* Callbacks for adding face and fib entry */
 
 void OnFibAddNextHopSuccess (const ndn::nfd::ControlParameters parameters) {
 	printf("Adding next hop in fib succeeded \n");
@@ -134,6 +164,8 @@ void OnFaceCreateFailure (const ndn::mgmt::ControlResponse response) {
 	}
 }
 
+/* Methods to receive response from RV and handle it */
+
 // For each mapping (containing one IP address and a list of prefixes it serves), add a face for the IP,
 // which if successful, triggers adding fib entries
 void storeMapping(ndn::Block mappingListBlock) {
@@ -159,29 +191,11 @@ void storeMapping(ndn::Block mappingListBlock) {
 	}
 }
 
-void sendUpdateRequestToServer(int socketFileDescriptor, sockaddr_in server) {
-	ndn::Block updateRequestBlock = ndn::Block(AutoconfigConstants::BlockType::UpdateRequest);
-	updateRequestBlock.encode();
-	if (sendto(socketFileDescriptor, updateRequestBlock.wire(), updateRequestBlock.size(), 0, (struct sockaddr *)&server, sizeof(server)) < 0) {
-		printf("Error sending update request to RV \n");
-	} else {
-		printf("Sent update request to RV \n");
-	}
-}
-
-void sendPrefixListToServer(int socketFileDescriptor, ndn::Block prefixListToRegister, sockaddr_in server) {
-	if (sendto(socketFileDescriptor, prefixListToRegister.wire(), prefixListToRegister.size(), 0, (struct sockaddr *)&server, sizeof(server)) < 0) {
-		printf("Error sending to RV \n");
-	} else {
-		printf("Sent prefix list to RV \n");
-	}
-}
-
-void receiveAndStoreServerResponse(int socketFileDescriptor, sockaddr_in server) {
+void receiveAndStoreServerResponse(int socketFileDescriptor, sockaddr *server) {
 	unsigned char* receivingBuffer = new unsigned char[AutoconfigConstants::maxDatagramSize];
 	socklen_t serverLength = sizeof(server);
 
-	int numberBytesReceived = recvfrom(socketFileDescriptor, receivingBuffer, AutoconfigConstants::maxDatagramSize, 0, (struct sockaddr *)&server, &serverLength);
+	int numberBytesReceived = recvfrom(socketFileDescriptor, receivingBuffer, AutoconfigConstants::maxDatagramSize, 0, server, &serverLength);
 	// recvfrom returns -1 on failure, number of bytes read otherwise
 	if (numberBytesReceived < 0) {
 		printf("Error receiving response from server");
@@ -207,65 +221,90 @@ void receiveAndStoreServerResponse(int socketFileDescriptor, sockaddr_in server)
 	}
 }
 
-// Sends prefixes, receives response, and sends response to be stored in local NFD
+/* Methods to send info to RV */
+
+void sendUpdateRequestToServer(int socketFileDescriptor, sockaddr *server, socklen_t serverLength) {
+	ndn::Block updateRequestBlock = ndn::Block(AutoconfigConstants::BlockType::UpdateRequest);
+	updateRequestBlock.encode();
+	if (sendto(socketFileDescriptor, updateRequestBlock.wire(), updateRequestBlock.size(), 0, server, serverLength) < 0) {
+		printf("Error sending update request to RV \n");
+	} else {
+		printf("Sent update request to RV \n");
+	}
+}
+
+void sendPrefixListToServer(int socketFileDescriptor, ndn::Block prefixListToRegister, sockaddr *server, socklen_t serverLength) {
+	if (sendto(socketFileDescriptor, prefixListToRegister.wire(), prefixListToRegister.size(), 0, server, serverLength) < 0) {
+		printf("Error sending to RV \n");
+	} else {
+		printf("Sent prefix list to RV \n");
+	}
+}
+
+/* Manages registration, response retrieval, and retransmit/refresh */
 void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 	// Ask user for prefixes
 	ndn::Block prefixListToRegister = getPrefixesToRegister();
 
 	// Set up socket to communicate with server
-	int socketFileDescriptor = socket(AF_INET,SOCK_DGRAM,0);
-	struct sockaddr_in server;
-	server.sin_family = AF_INET;
-	server.sin_port = htons(AutoconfigConstants::portNumber);
-	server.sin_addr.s_addr = inet_addr(AutoconfigConstants::RV_IPAddress);
+	int socketFileDescriptor, addressInfo;
+	struct addrinfo hints, *serverInfo;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC; /* we should be able to support both IPv4 and IPv6 */
+	hints.ai_socktype = SOCK_DGRAM;
+	if ((addressInfo = getaddrinfo(AutoconfigConstants::RV_IPAddress, AutoconfigConstants::portNumber, &hints, &serverInfo)) == 0) {
+		socketFileDescriptor = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol);
 
-	// Set up for retransmit timer for prefix registration
-	timeval tv;
-	tv.tv_sec = AutoconfigConstants::timeoutSeconds;
-	tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
-
-	fd_set fdRead;
-	FD_ZERO(&fdRead);
-	FD_SET(socketFileDescriptor, &fdRead);
-
-	// Send and retransmit if no response before timeout
-	sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
-	int numberOfPrefixRegistrationRetries = 0;
-	while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
-		printf("Received no response. Retransmitting prefix list \n");
-		sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, server);
-
-		numberOfPrefixRegistrationRetries++;
-
-		// Reset timeval because the call to select above can change it
+		// Set up for retransmit timer for prefix registration
+		timeval tv;
 		tv.tv_sec = AutoconfigConstants::timeoutSeconds;
 		tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
-	}
-	if (numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
-		// Now we know there is a response, so receive it
-		receiveAndStoreServerResponse(socketFileDescriptor, server);
-	} else {
-		printf("Retransmitted max number of times and received no response \n");
-	}
 
-	// Start refresh timer
-	int numberOfRequestUpdateRetries = 0;
-	while (true) {
-		std::this_thread::sleep_for(std::chrono::seconds(AutoconfigConstants::refreshPeriodSeconds));
-		sendUpdateRequestToServer(socketFileDescriptor, server);
-		while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
-			printf("Received no response. Retransmitting request update\n");
-			sendUpdateRequestToServer(socketFileDescriptor, server);
-			numberOfRequestUpdateRetries++;
+		fd_set fdRead;
+		FD_ZERO(&fdRead);
+		FD_SET(socketFileDescriptor, &fdRead);
+
+		// Send and retransmit if no response before timeout
+		sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, serverInfo->ai_addr, serverInfo->ai_addrlen);
+		int numberOfPrefixRegistrationRetries = 0;
+		while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
+			printf("Received no response. Retransmitting prefix list \n");
+			sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, serverInfo->ai_addr, serverInfo->ai_addrlen);
+
+			numberOfPrefixRegistrationRetries++;
+
+			// Reset timeval because the call to select above can change it
 			tv.tv_sec = AutoconfigConstants::timeoutSeconds;
 			tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
 		}
-		if (numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
-			receiveAndStoreServerResponse(socketFileDescriptor, server);
+		if (numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
+			// Now we know there is a response, so receive it
+			receiveAndStoreServerResponse(socketFileDescriptor, serverInfo->ai_addr);
 		} else {
-			printf("Retransmitted update request max number of times and received no response \n");
+			printf("Retransmitted max number of times and received no response \n");
 		}
-		numberOfRequestUpdateRetries = 0;
+
+		// Start refresh timer
+		int numberOfRequestUpdateRetries = 0;
+		while (true) {
+			std::this_thread::sleep_for(std::chrono::seconds(AutoconfigConstants::refreshPeriodSeconds));
+			sendUpdateRequestToServer(socketFileDescriptor, serverInfo->ai_addr, serverInfo->ai_addrlen);
+			while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
+				printf("Received no response. Retransmitting request update\n");
+				sendUpdateRequestToServer(socketFileDescriptor, serverInfo->ai_addr, serverInfo->ai_addrlen);
+				numberOfRequestUpdateRetries++;
+				tv.tv_sec = AutoconfigConstants::timeoutSeconds;
+				tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
+			}
+			if (numberOfRequestUpdateRetries < AutoconfigConstants::maxRetries) {
+				receiveAndStoreServerResponse(socketFileDescriptor, serverInfo->ai_addr);
+			} else {
+				printf("Retransmitted update request max number of times and received no response \n");
+			}
+			numberOfRequestUpdateRetries = 0;
+		}
+
+		freeaddrinfo(serverInfo);
 	}
 }
 

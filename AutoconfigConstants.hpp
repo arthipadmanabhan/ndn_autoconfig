@@ -20,9 +20,8 @@ enum BlockType {
 };
 
 // RV constants
-// TODO: Save only RV name and get IP with DNS
-static const char* RV_IPAddress = "192.168.0.103";
-static const uint16_t portNumber = 53000;
+static const char* RV_IPAddress = "192.168.0.103"; /* This can be changed to RV name once we have that */
+static const char* portNumber = "53000";
 
 // max UDP datagram
 static const int maxDatagramSize = 65507; // check this
@@ -35,6 +34,8 @@ static const int maxRetries = 3;
 // Refresh timer
 static const int refreshPeriodSeconds = 30;
 
+// NDN constant
+static const unsigned short NDNPort = 6363;
 }
 
 #endif /* AUTOCONFIGCONSTANTS_HPP_ */

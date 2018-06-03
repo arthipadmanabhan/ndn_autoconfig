@@ -15,11 +15,11 @@ namespace Server {
 
 class RegistrationRequest {
 public:
-	static void registerClientInfoAndSendResponse(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_in client, socklen_t clientLength);
-	static void sendMappingListToClient(int socketFileDescriptor, sockaddr_in client, socklen_t clientLength);
+	static void registerClientInfoAndSendResponse(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_storage client, socklen_t clientLength);
+	static void sendMappingListToClient(int socketFileDescriptor, sockaddr_storage client, socklen_t clientLength);
 
 private:
-	static void addPrefixListToMappingList(ndn::Block prefixListBlock, sockaddr_in client);
+	static void addPrefixListToMappingList(ndn::Block prefixListBlock, sockaddr_storage client);
 	static ndn::Block m_prefixIPMappingList;
 };
 

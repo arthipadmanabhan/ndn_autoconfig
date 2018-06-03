@@ -7,6 +7,7 @@
 #include <ndn-cxx/encoding/block.hpp>
 #include <iostream>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -18,17 +19,26 @@
 #include "AutoconfigConstants.hpp"
 
 int main() {
-	// Initialize sockets and bind server info
-	int socketFileDescriptor = socket(AF_INET,SOCK_DGRAM,0);
-	struct sockaddr_in server,client;
+	// Initialize socket to receive
+	int socketFileDescriptor, addressInfo;
+	struct addrinfo hints, *serverInfo;
 
-	server.sin_family = AF_INET;
-	server.sin_port = htons(AutoconfigConstants::portNumber);
-	server.sin_addr.s_addr = INADDR_ANY;
-	bind(socketFileDescriptor, (struct sockaddr *)&server, sizeof(server));
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC; /* can accept from IPv4 or IPv6 */
+	hints.ai_socktype = SOCK_DGRAM;
+	hints.ai_flags = AI_PASSIVE; /* to be filled in */
+
+	if ((addressInfo = getaddrinfo(NULL, AutoconfigConstants::portNumber, &hints, &serverInfo)) != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(addressInfo));
+		exit(1);
+	}
+
+	socketFileDescriptor = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol);
+	bind(socketFileDescriptor, serverInfo->ai_addr, serverInfo->ai_addrlen);
 
 	// Always be ready to receive messages from clients
 	unsigned char* receivingBuffer = new unsigned char[AutoconfigConstants::maxDatagramSize];
+	sockaddr_storage client;
 	socklen_t clientLength = sizeof(client);
 	printf("Ready to receive \n");
 	while (true) {
