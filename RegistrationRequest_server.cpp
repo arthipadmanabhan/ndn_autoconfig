@@ -11,33 +11,22 @@
 
 ndn::Block Server::RegistrationRequest::m_prefixIPMappingList = ndn::Block(AutoconfigConstants::BlockType::IPPrefixMappingList);
 
-void Server::RegistrationRequest::addPrefixListToMappingList(ndn::Block prefixListBlock, sockaddr_storage client) {
-	// Create the block for this IP-prefix mapping
-	ndn::Block mapping = ndn::Block(AutoconfigConstants::BlockType::IPPrefixMapping);
+void Server::RegistrationRequest::addNodeInformationToList(ndn::Block nodeInformation) {
+	m_prefixIPMappingList.push_back(nodeInformation);
 
-	// Create the block for the IP address
-	char hoststr[NI_MAXHOST];
-	if (getnameinfo((struct sockaddr *)&client, client.ss_len, hoststr, sizeof(hoststr), NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV | NI_DGRAM) == 0) {
-		ndn::Buffer clientIPBuffer = ndn::Buffer(hoststr, strlen(hoststr) + 1);
-		ndn::ConstBufferPtr clientIPBufferPtr = std::make_shared<const ndn::Buffer>(clientIPBuffer);
-		ndn::Block IPAddressToAdd = ndn::Block(AutoconfigConstants::BlockType::IPAddress, clientIPBufferPtr);
-
-		// Add the IP and registration block, which is a list of prefixes, into the mapping
-		mapping.push_back(prefixListBlock);
-		mapping.push_back(IPAddressToAdd);
-
-		// Add this mapping to the block containing all mappings
-		m_prefixIPMappingList.push_back(mapping);
-
-		// For debugging (and maybe asserting for proper block type in the future?)
-		prefixListBlock.parse();
-		printf("Registered prefix list: \n");
-		for (auto iterator = prefixListBlock.elements_begin(); iterator < prefixListBlock.elements_end(); iterator++) {
-			printf("%s \n", iterator->value());
-		}
-		printf("for IP address: %s \n", hoststr);
-		printf("Number of prefix registration calls made to RV: %zu \n", m_prefixIPMappingList.elements_size());
+	// For debugging and verifying that the block has the necessary parts (IP + prefix list)
+	nodeInformation.parse();
+	printf("Registered prefix list: \n");
+	ndn::Block prefixList = nodeInformation.get(AutoconfigConstants::PrefixList);
+	prefixList.parse();
+	for (auto iterator = prefixList.elements_begin(); iterator < prefixList.elements_end(); iterator++) {
+		printf("%s \n", iterator->value());
 	}
+	ndn::Block IP = nodeInformation.get(AutoconfigConstants::IPAddress);
+	const char *IPAddress = reinterpret_cast<const char*>(IP.value());
+	printf("for IP address: %s \n", IPAddress);
+	printf("Number of prefix registration calls made to RV: %zu \n", m_prefixIPMappingList.elements_size());
+	// End debug
 }
 
 // Encode and send the current IP-prefix mappings we know about to client
@@ -52,7 +41,7 @@ void Server::RegistrationRequest::sendMappingListToClient(int socketFileDescript
 
 // Add the received block containing a list of prefixes and the IP it came from to the mapping
 // and send back info about all clients we know about
-void Server::RegistrationRequest::registerClientInfoAndSendResponse(ndn::Block prefixListBlock, int socketFileDescriptor, sockaddr_storage client, socklen_t clientLength) {
-	addPrefixListToMappingList(prefixListBlock, client);
+void Server::RegistrationRequest::registerClientInfoAndSendResponse(ndn::Block nodeInformation, int socketFileDescriptor, sockaddr_storage client, socklen_t clientLength) {
+	addNodeInformationToList(nodeInformation);
 	sendMappingListToClient(socketFileDescriptor, client, clientLength);
 }

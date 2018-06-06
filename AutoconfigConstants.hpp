@@ -11,7 +11,7 @@
 namespace AutoconfigConstants {
 
 enum BlockType {
-	PrefixListToRegister = 128,
+	PrefixList = 128,
 	Prefix = 129,
 	IPAddress = 130,
 	IPPrefixMapping = 131,

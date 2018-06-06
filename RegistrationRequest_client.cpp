@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -30,29 +32,79 @@
 #include "AutoconfigConstants.hpp"
 #include "RegistrationRequest_client.hpp"
 
-/* Helpers to get prefixes from user and package them to send to RV */
+static char localIPAddress[64];
+
+/* Helpers to get prefixes from user and local IP and package them to send to RV */
 
 // Create a prefix block from a string and add it to the registration request
-ndn::Block addPrefixBlock(std::string inputString, ndn::Block prefixListBlock) {
+ndn::Block prefixFromInputString(std::string inputString) {
 	ndn::Buffer inputStringBuffer = ndn::Buffer(inputString.c_str(), inputString.length() + 1);
 	ndn::ConstBufferPtr inputStringBufferPointer = std::make_shared<const ndn::Buffer>(inputStringBuffer);
-	ndn::Block prefixBlock = ndn::Block(AutoconfigConstants::BlockType::Prefix, inputStringBufferPointer);
-
-	prefixListBlock.push_back(prefixBlock);
+	ndn::Block prefix = ndn::Block(AutoconfigConstants::BlockType::Prefix, inputStringBufferPointer);
 
 	// For debugging
 	printf("Adding prefix block: \n");
-	printf("Type: %d \n", prefixBlock.type());
-	printf("Length: %zu \n", prefixBlock.value_size());
-	printf("Value: %s \n\n", prefixBlock.value());
+	printf("Type: %d \n", prefix.type());
+	printf("Length: %zu \n", prefix.value_size());
+	printf("Value: %s \n\n", prefix.value());
 
-	return prefixListBlock;
+	return prefix;
 }
+
+// TODO: Fix this method!!!!
+// This is an ugly hack that only works for Mac and just takes the IPv4 ethernet address (en0). It's not portable to other platforms
+// and we need a proper way of telling which address actually corresponds to local network
+ndn::Block retreiveLocalIPAddress() {
+    struct ifaddrs *myaddrs, *ifa;
+    void *in_addr;
+    char buffer[64];
+    if(getifaddrs(&myaddrs) == 0) {
+    	for (ifa = myaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+			if (ifa->ifa_addr == NULL) {
+				continue;
+			}
+			if (!(ifa->ifa_flags & IFF_UP)) {
+				continue;
+			}
+			switch (ifa->ifa_addr->sa_family) {
+				case AF_INET: {
+					struct sockaddr_in *s4 = (struct sockaddr_in *)ifa->ifa_addr;
+					in_addr = &s4->sin_addr;
+					break;
+				}
+				case AF_INET6: {
+					struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+					in_addr = &s6->sin6_addr;
+					break;
+				}
+				default:
+					continue;
+			}
+			if (inet_ntop(ifa->ifa_addr->sa_family, in_addr, buffer, sizeof(buffer))) {
+				if(ifa->ifa_addr->sa_family == AF_INET && strcmp(ifa->ifa_name, "en0")==0) {
+					break;
+				}
+			}
+		}
+    }
+    freeifaddrs(myaddrs);
+    if(strlen(buffer) != 0) {
+    	strcpy(localIPAddress, buffer);
+    }
+
+    ndn::Buffer IPBuffer = ndn::Buffer(buffer, strlen(buffer) + 1);
+	ndn::ConstBufferPtr IPBufferPointer = std::make_shared<const ndn::Buffer>(IPBuffer);
+	ndn::Block IPBlock = ndn::Block(AutoconfigConstants::BlockType::IPAddress, IPBufferPointer);
+
+	return IPBlock;
+}
+
 
 // Ask user to input prefixes
 // TODO: Figure out a better way of getting prefixes (secured)
-ndn::Block getPrefixesToRegister() {
-	ndn::Block prefixListBlock = ndn::Block(AutoconfigConstants::BlockType::PrefixListToRegister);
+// Node information must contain both a list of prefixes (provided by the application and the local IP address)
+ndn::Block getNodeInformation() {
+	ndn::Block prefixList = ndn::Block(AutoconfigConstants::BlockType::PrefixList);
 
 	bool emptyInput = false;
 	printf("Preparing for registration request. Enter prefixes one at a time, or press Enter be finished \n");
@@ -60,24 +112,30 @@ ndn::Block getPrefixesToRegister() {
 		std::string inputString;
 		std::getline(std::cin, inputString);
 		if (inputString.length() != 0) {
-			prefixListBlock = addPrefixBlock(inputString, prefixListBlock);
+			ndn::Block prefix = prefixFromInputString(inputString);
+			prefixList.push_back(prefix);
 		} else {
 			emptyInput = true;
 		}
 	}
-	// Encode the list of prefixes
-	prefixListBlock.encode();
-	return prefixListBlock;
+	ndn::Block nodeInformation = ndn::Block(AutoconfigConstants::BlockType::IPPrefixMapping);
+	nodeInformation.push_back(prefixList);
+	ndn::Block IPAddress = retreiveLocalIPAddress();
+	nodeInformation.push_back(IPAddress);
+
+	// Encode the list of prefixes and IP address
+	nodeInformation.encode();
+	return nodeInformation;
 }
 
 /* Helper to determine address type of IP and return uri */
-const char* uriFromIPAddress(const char *IPAddress) {
+std::string uriFromIPAddress(const char *IPAddress) {
 	struct addrinfo hints, *info;
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC;
 
 	const char *addressString = IPAddress;
-	const char *uriString;
+	std::string uriString;
 	bool isIPv6 = false;
 	if (getaddrinfo(IPAddress, 0, &hints, &info) == 0) {
 		if (info->ai_family == AF_INET6) {
@@ -98,11 +156,10 @@ const char* uriFromIPAddress(const char *IPAddress) {
 			boost::asio::ip::udp::endpoint endpoint4(boost::asio::ip::address_v4::from_string(addressString), AutoconfigConstants::NDNPort);
 			uri = ndn::FaceUri(endpoint4);
 		}
-		uriString = uri.toString().c_str();
+		uriString = uri.toString();
 
 		freeaddrinfo(info);
 	}
-
 	return uriString;
 }
 
@@ -176,18 +233,20 @@ void storeMapping(ndn::Block mappingListBlock) {
 		// Get the IP address and prefix list for this node
 		ndn::Block IPBlock = mappingIterator->get(AutoconfigConstants::IPAddress);
 		const char *IPAddress = reinterpret_cast<const char*>(IPBlock.value());
-		ndn::Block prefixList = mappingIterator->get(AutoconfigConstants::PrefixListToRegister);
+		if (strcmp(IPAddress, localIPAddress) != 0) {
+			ndn::Block prefixList = mappingIterator->get(AutoconfigConstants::PrefixList);
 
-		// Create a face for this IP address
-		ndn::Face faceToNFD;
-		ndn::KeyChain appKeyChain;
-		ndn::nfd::Controller controller(faceToNFD, appKeyChain);
+			// Create a face for this IP address
+			ndn::Face faceToNFD;
+			ndn::KeyChain appKeyChain;
+			ndn::nfd::Controller controller(faceToNFD, appKeyChain);
 
-		ndn::nfd::ControlParameters parameters;
-		parameters.setUri(uriFromIPAddress(IPAddress));
+			ndn::nfd::ControlParameters parameters;
+			parameters.setUri(uriFromIPAddress(IPAddress).c_str());
 
-		controller.start<ndn::nfd::FaceCreateCommand>(parameters, std::bind(&OnFaceCreateSuccess, _1, prefixList), &OnFaceCreateFailure);
-		faceToNFD.processEvents();
+			controller.start<ndn::nfd::FaceCreateCommand>(parameters, std::bind(&OnFaceCreateSuccess, _1, prefixList), &OnFaceCreateFailure);
+			faceToNFD.processEvents();
+		}
 	}
 }
 
@@ -244,7 +303,7 @@ void sendPrefixListToServer(int socketFileDescriptor, ndn::Block prefixListToReg
 /* Manages registration, response retrieval, and retransmit/refresh */
 void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 	// Ask user for prefixes
-	ndn::Block prefixListToRegister = getPrefixesToRegister();
+	ndn::Block nodeInformation = getNodeInformation();
 
 	// Set up socket to communicate with server
 	int socketFileDescriptor, addressInfo;
@@ -265,19 +324,19 @@ void Client::RegistrationRequest::registerPrefixesAndReceiveResponse() {
 		FD_SET(socketFileDescriptor, &fdRead);
 
 		// Send and retransmit if no response before timeout
-		sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, serverInfo->ai_addr, serverInfo->ai_addrlen);
-		int numberOfPrefixRegistrationRetries = 0;
-		while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
+		sendPrefixListToServer(socketFileDescriptor, nodeInformation, serverInfo->ai_addr, serverInfo->ai_addrlen);
+		int numberOfRegistrationRetries = 0;
+		while (select(socketFileDescriptor + 1, &fdRead, NULL, NULL, &tv) <= 0 && numberOfRegistrationRetries < AutoconfigConstants::maxRetries) {
 			printf("Received no response. Retransmitting prefix list \n");
-			sendPrefixListToServer(socketFileDescriptor, prefixListToRegister, serverInfo->ai_addr, serverInfo->ai_addrlen);
+			sendPrefixListToServer(socketFileDescriptor, nodeInformation, serverInfo->ai_addr, serverInfo->ai_addrlen);
 
-			numberOfPrefixRegistrationRetries++;
+			numberOfRegistrationRetries++;
 
 			// Reset timeval because the call to select above can change it
 			tv.tv_sec = AutoconfigConstants::timeoutSeconds;
 			tv.tv_usec = AutoconfigConstants::timeoutMilliseconds;
 		}
-		if (numberOfPrefixRegistrationRetries < AutoconfigConstants::maxRetries) {
+		if (numberOfRegistrationRetries < AutoconfigConstants::maxRetries) {
 			// Now we know there is a response, so receive it
 			receiveAndStoreServerResponse(socketFileDescriptor, serverInfo->ai_addr);
 		} else {

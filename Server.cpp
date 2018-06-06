@@ -53,7 +53,7 @@ int main() {
 				ndn::Block receivedBlock = std::get<1>(parsingResult);
 				AutoconfigConstants::BlockType blockType = static_cast<AutoconfigConstants::BlockType>(receivedBlock.type());
 				switch(blockType) {
-					case AutoconfigConstants::PrefixListToRegister:
+					case AutoconfigConstants::IPPrefixMapping:
 						Server::RegistrationRequest::registerClientInfoAndSendResponse(receivedBlock, socketFileDescriptor, client, clientLength);
 						break;
 					case AutoconfigConstants::UpdateRequest:
